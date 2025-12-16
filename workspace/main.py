@@ -8,7 +8,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 import sys
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import onnxruntime as ort
@@ -25,6 +25,51 @@ if str(REPO_ROOT) not in sys.path:
 class PointCloud:
     points: np.ndarray  # shape: (N, 5) -> x, y, z, intensity, ring_id
     columns: Sequence[str]
+
+
+def _collect_csv_paths(input_csv: Optional[Path], input_dir: Optional[Path]) -> List[Path]:
+    if input_csv and input_dir:
+        raise ValueError("Provide either --input-csv or --input-dir, not both.")
+
+    source = input_dir or input_csv
+    if source is None:
+        raise ValueError("Either --input-csv or --input-dir is required.")
+    if not source.exists():
+        raise FileNotFoundError(f"{source} does not exist.")
+
+    if source.is_dir():
+        csv_paths = sorted(p for p in source.glob("*.csv") if p.is_file())
+    else:
+        csv_paths = [source]
+
+    if not csv_paths:
+        raise FileNotFoundError(f"No CSV files found in {source}.")
+    return csv_paths
+
+
+def _resolve_output_paths(
+    csv_paths: Sequence[Path],
+    output: Optional[Path],
+    output_dir: Optional[Path],
+    base_dir: Optional[Path],
+) -> List[Optional[Path]]:
+    if len(csv_paths) == 1:
+        csv_path = csv_paths[0]
+        if output and output_dir:
+            raise ValueError("Use either --output or --output-dir, not both.")
+        if output:
+            return [output]
+        if output_dir:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            return [output_dir / f"{csv_path.stem}.json"]
+        return [None]
+
+    if output:
+        raise ValueError("Use --output-dir (not --output) when processing multiple CSV files.")
+
+    target_dir = output_dir or ((base_dir or Path.cwd()) / "predictions")
+    target_dir.mkdir(parents=True, exist_ok=True)
+    return [target_dir / f"{p.stem}.json" for p in csv_paths]
 
 
 def _is_number(token: str) -> bool:
@@ -101,11 +146,12 @@ def _run_single_inference(
     score_threshold: float,
     class_names: Optional[Sequence[str]],
     point_columns: Sequence[str],
+    inference_fn: Callable,
 ) -> Dict:
     # inference_detector expects a file path. Write a temporary .bin file.
     with tempfile.NamedTemporaryFile(suffix=".bin") as tmp:
         points.astype(np.float32).tofile(tmp.name)
-        result = inference_detector(model, tmp.name)
+        result = inference_fn(model, tmp.name)
 
     if isinstance(result, tuple):
         data_sample = result[0]
@@ -149,6 +195,33 @@ def _run_single_inference(
     }
 
 
+def _load_torch_model(config_path: Path, checkpoint_path: Path, device: str):
+    # Lazy import to avoid heavy deps when using ONNX-only mode.
+    from mmdet3d.apis import inference_detector, init_model
+
+    model = init_model(str(config_path), str(checkpoint_path), device=device)
+    class_names = model.dataset_meta.get("classes") if hasattr(model, "dataset_meta") else None
+    return model, class_names, inference_detector
+
+
+def _run_torch_on_csv(
+    model,
+    class_names: Optional[Sequence[str]],
+    inference_fn: Callable,
+    csv_path: Path,
+    score_threshold: float,
+) -> Dict:
+    point_cloud = load_points_from_csv(csv_path)
+    return _run_single_inference(
+        model=model,
+        points=point_cloud.points,
+        score_threshold=score_threshold,
+        class_names=class_names,
+        point_columns=point_cloud.columns,
+        inference_fn=inference_fn,
+    )
+
+
 def run_inference(
     config_path: Path,
     checkpoint_path: Path,
@@ -156,20 +229,18 @@ def run_inference(
     device: str = "cuda:0",
     score_threshold: float = 0.0,
 ) -> Dict:
-    # Lazy import to avoid heavy deps when using ONNX-only mode.
-    from mmdet3d.apis import inference_detector, init_model
-
-    point_cloud = load_points_from_csv(csv_path)
-    model = init_model(str(config_path), str(checkpoint_path), device=device)
-    class_names = model.dataset_meta.get("classes") if hasattr(model, "dataset_meta") else None
-
     with torch.no_grad():
-        return _run_single_inference(
+        model, class_names, inference_detector = _load_torch_model(
+            config_path=config_path,
+            checkpoint_path=checkpoint_path,
+            device=device,
+        )
+        return _run_torch_on_csv(
             model=model,
-            points=point_cloud.points,
-            score_threshold=score_threshold,
             class_names=class_names,
-            point_columns=point_cloud.columns,
+            inference_fn=inference_detector,
+            csv_path=csv_path,
+            score_threshold=score_threshold,
         )
 
 
@@ -403,9 +474,17 @@ def decode_centerpoint_outputs(
     return batch_dets
 
 
-def run_inference_onnx(
-    onnx_voxel: Path,
-    onnx_head: Path,
+def _load_onnx_sessions(onnx_voxel: Path, onnx_head: Path) -> Tuple[ort.InferenceSession, ort.InferenceSession, int]:
+    sess_voxel = ort.InferenceSession(str(onnx_voxel))
+    expected_dim = sess_voxel.get_inputs()[0].shape[-1]
+    sess_head = ort.InferenceSession(str(onnx_head))
+    return sess_voxel, sess_head, expected_dim
+
+
+def _run_onnx_on_csv(
+    sess_voxel: ort.InferenceSession,
+    sess_head: ort.InferenceSession,
+    expected_dim: int,
     csv_path: Path,
     voxel_size: Sequence[float],
     point_cloud_range: Sequence[float],
@@ -418,8 +497,6 @@ def run_inference_onnx(
     y_axis_reference: bool,
 ) -> Dict:
     point_cloud = load_points_from_csv(csv_path)
-    sess_voxel = ort.InferenceSession(str(onnx_voxel))
-    expected_dim = sess_voxel.get_inputs()[0].shape[-1]
 
     # Determine base_dim (raw point feature dim) and whether to include distance
     points_dim = point_cloud.points.shape[1]
@@ -476,7 +553,6 @@ def run_inference_onnx(
         num_channels=voxel_features.shape[1],
     )
 
-    sess_head = ort.InferenceSession(str(onnx_head))
     head_inputs = {sess_head.get_inputs()[0].name: spatial_features}
     head_outputs = sess_head.run(None, head_inputs)
 
@@ -501,10 +577,54 @@ def run_inference_onnx(
     }
 
 
+def run_inference_onnx(
+    onnx_voxel: Path,
+    onnx_head: Path,
+    csv_path: Path,
+    voxel_size: Sequence[float],
+    point_cloud_range: Sequence[float],
+    max_points_per_voxel: int,
+    max_voxels: int,
+    out_size_factor: int,
+    score_threshold: float,
+    class_names: Optional[Sequence[str]],
+    output_shape: Tuple[int, int],
+    y_axis_reference: bool,
+) -> Dict:
+    sess_voxel, sess_head, expected_dim = _load_onnx_sessions(onnx_voxel, onnx_head)
+    return _run_onnx_on_csv(
+        sess_voxel=sess_voxel,
+        sess_head=sess_head,
+        expected_dim=expected_dim,
+        csv_path=csv_path,
+        voxel_size=voxel_size,
+        point_cloud_range=point_cloud_range,
+        max_points_per_voxel=max_points_per_voxel,
+        max_voxels=max_voxels,
+        out_size_factor=out_size_factor,
+        score_threshold=score_threshold,
+        class_names=class_names,
+        output_shape=output_shape,
+        y_axis_reference=y_axis_reference,
+    )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run CenterPoint inference from CSV point cloud.")
-    parser.add_argument("--input-csv", required=True, type=Path, help="Path to input point cloud CSV.")
-    parser.add_argument("--output", type=Path, default=None, help="Path to save JSON output. Prints to stdout if omitted.")
+    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group.add_argument(
+        "--input-csv",
+        type=Path,
+        help="Path to a single point cloud CSV. Can be a directory to process all CSVs inside.",
+    )
+    input_group.add_argument("--input-dir", type=Path, help="Directory containing point cloud CSV files.")
+    parser.add_argument("--output", type=Path, default=None, help="Path to save JSON output for a single CSV.")
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        help="Directory to save JSON outputs when processing multiple CSVs (defaults to ./predictions under the input dir).",
+    )
     parser.add_argument("--score-threshold", type=float, default=0.0, help="Filter detections below this score.")
 
     subparsers = parser.add_subparsers(dest="mode", required=True)
@@ -553,33 +673,58 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    csv_paths = _collect_csv_paths(args.input_csv, getattr(args, "input_dir", None))
+    base_dir = args.input_dir or (args.input_csv if args.input_csv and args.input_csv.is_dir() else None)
+    output_paths = _resolve_output_paths(
+        csv_paths=csv_paths,
+        output=args.output,
+        output_dir=getattr(args, "output_dir", None),
+        base_dir=base_dir,
+    )
+
+    def write_output(result: Dict, target_path: Optional[Path], source_csv: Path) -> None:
+        if target_path:
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            target_path.write_text(json.dumps(result, indent=2))
+            print(f"Saved predictions for {source_csv} -> {target_path}")
+        else:
+            print(json.dumps(result, indent=2))
+
     if args.mode == "torch":
-        result = run_inference(
+        model, class_names, inference_detector = _load_torch_model(
             config_path=args.config,
             checkpoint_path=args.checkpoint,
-            csv_path=args.input_csv,
             device=args.device,
-            score_threshold=args.score_threshold,
         )
+        with torch.no_grad():
+            for csv_path, target_path in zip(csv_paths, output_paths):
+                result = _run_torch_on_csv(
+                    model=model,
+                    class_names=class_names,
+                    inference_fn=inference_detector,
+                    csv_path=csv_path,
+                    score_threshold=args.score_threshold,
+                )
+                write_output(result, target_path, csv_path)
     else:
-        result = run_inference_onnx(
-            onnx_voxel=args.onnx_voxel,
-            onnx_head=args.onnx_head,
-            csv_path=args.input_csv,
-            voxel_size=args.voxel_size,
-            point_cloud_range=args.point_cloud_range,
-            max_points_per_voxel=args.max_points_per_voxel,
-            max_voxels=args.max_voxels,
-            out_size_factor=args.out_size_factor,
-            score_threshold=args.score_threshold,
-            class_names=args.class_names,
-            output_shape=(args.grid_size[0], args.grid_size[1]),
-            y_axis_reference=args.y_axis_reference,
-        )
-    if args.output:
-        args.output.write_text(json.dumps(result, indent=2))
-    else:
-        print(json.dumps(result, indent=2))
+        sess_voxel, sess_head, expected_dim = _load_onnx_sessions(args.onnx_voxel, args.onnx_head)
+        for csv_path, target_path in zip(csv_paths, output_paths):
+            result = _run_onnx_on_csv(
+                sess_voxel=sess_voxel,
+                sess_head=sess_head,
+                expected_dim=expected_dim,
+                csv_path=csv_path,
+                voxel_size=args.voxel_size,
+                point_cloud_range=args.point_cloud_range,
+                max_points_per_voxel=args.max_points_per_voxel,
+                max_voxels=args.max_voxels,
+                out_size_factor=args.out_size_factor,
+                score_threshold=args.score_threshold,
+                class_names=args.class_names,
+                output_shape=(args.grid_size[0], args.grid_size[1]),
+                y_axis_reference=args.y_axis_reference,
+            )
+            write_output(result, target_path, csv_path)
 
 
 if __name__ == "__main__":

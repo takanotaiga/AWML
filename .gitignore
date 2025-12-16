@@ -148,3 +148,6 @@ cython_debug/
 
 *.csv
 *.DS_Store
+*.png
+*.json
+*.mp4

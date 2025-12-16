@@ -48,6 +48,19 @@ Defaults match CenterPoint T4 base v2.x deployment:
 - `class_names`: `car truck bus bicycle pedestrian`
 - `--y-axis-reference`: set this if ONNX was exported with y-axis clockwise rotation (Autoware deploy option). It swaps L/W and flips yaw like the bbox coder.
 
+Batch all CSVs in a directory (model is loaded once and reused):
+
+```bash
+uv run python -m main onnx \
+  --onnx-voxel /path/to/pts_voxel_encoder_centerpoint.onnx \
+  --onnx-head /path/to/pts_backbone_neck_head_centerpoint.onnx \
+  --input-dir ./output_csv \
+  --output-dir ./predictions \
+  --score-threshold 0.2
+```
+
+`--input-csv` can also point to a directory; outputs default to `<input-dir>/predictions` if `--output-dir` is omitted.
+
 ## Run inference (PyTorch checkpoint, optional)
 
 ```bash
@@ -89,6 +102,23 @@ uv run python -m visualize_predictions \
 ```
 
 - BEVに点群 (x,y) を散布し、検出した3D bboxを赤枠＋ラベル/スコア付きで描画します。
+
+Directory + video export (frames are `frame_00000.png` and stitched to mp4 via ffmpeg):
+
+```bash
+uv run python -m visualize_predictions \
+  --input-dir ./output_csv \
+  --pred-dir ./predictions \
+  --output-dir ./vis_frames \
+  --video ./vis_frames/visualization.mp4 \
+  --score-threshold 0.2 \
+  --xlim -130 130 \
+  --ylim -130 130
+```
+
+If `--video` is omitted while processing multiple CSVs, an mp4 is still produced at `<output-dir>/visualization.mp4`. Single-file mode remains available via `--input-csv` + `--pred-json` (optionally `--output`).
+
+`--xlim/--ylim` lock the plot window to a fixed BEV range (defaults to +-130 m) so frames stay aligned and readable.
 
 ## Notes on ONNX input features
 

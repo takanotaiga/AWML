@@ -7,12 +7,18 @@ import math
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+import sys
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import onnxruntime as ort
 import torch
 import torch.nn.functional as F
+
+# Ensure repository root is importable (for optional imports)
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 
 @dataclass
@@ -176,6 +182,7 @@ def voxelize_points(
     point_cloud_range: Sequence[float],
     max_points_per_voxel: int,
     max_voxels: int,
+    base_dim: int,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Minimal voxelizer compatible with PointPillarsScatter."""
     pc_range = np.array(point_cloud_range, dtype=np.float32)
@@ -212,10 +219,10 @@ def voxelize_points(
                 continue
             voxel_dict[key] = []
         if len(voxel_dict[key]) < max_points_per_voxel:
-            voxel_dict[key].append(point[:4])  # use x,y,z,intensity
+            voxel_dict[key].append(point[:base_dim])
 
     num_voxels = len(voxel_dict)
-    voxels = np.zeros((num_voxels, max_points_per_voxel, 4), dtype=np.float32)
+    voxels = np.zeros((num_voxels, max_points_per_voxel, base_dim), dtype=np.float32)
     num_points_per_voxel = np.zeros((num_voxels,), dtype=np.int32)
     coors = np.zeros((num_voxels, 4), dtype=np.int32)  # [batch, z, y, x]
 
@@ -235,6 +242,7 @@ def build_pillar_features(
     voxel_size: Sequence[float],
     point_cloud_range: Sequence[float],
     include_distance: bool = False,
+    base_dim: int = 4,
 ) -> np.ndarray:
     """
     Replicate PillarFeatureNet.get_input_features:
@@ -248,7 +256,7 @@ def build_pillar_features(
     max_points = voxels.shape[1]
     mask = (np.arange(max_points)[None, :] < num_points[:, None]).astype(np.bool_)
 
-    pts = voxels.copy()
+    pts = voxels[:, :, :base_dim].copy()
     # cluster center
     pts_sum = pts[:, :, :3].sum(axis=1, keepdims=True)
     pts_mean = pts_sum / np.maximum(num_points[:, None, None], 1e-6)
@@ -321,6 +329,7 @@ def decode_centerpoint_outputs(
     out_size_factor: int,
     score_threshold: float,
     class_names: Optional[Sequence[str]],
+    y_axis_reference: bool = False,
     topk: int = 100,
 ) -> List[Dict]:
     heatmap, reg, height, dim, rot, vel = [torch.from_numpy(o) for o in outputs]
@@ -352,24 +361,36 @@ def decode_centerpoint_outputs(
         scores_b = scores[b]
         clses_b = clses[b]
 
+        # Post-center range filter (match config)
+        pc_min = torch.tensor([-200.0, -200.0, -10.0], device=xs_b.device)
+        pc_max = torch.tensor([200.0, 200.0, 10.0], device=xs_b.device)
+
         dets = []
         for i in range(scores_b.shape[0]):
             score = float(scores_b[i])
             if score < score_threshold:
                 continue
+            cx = float(xs_b[i])
+            cy = float(ys_b[i])
+            cz = float(height_b[i])
+            if not (pc_min[0] <= cx <= pc_max[0] and pc_min[1] <= cy <= pc_max[1] and pc_min[2] <= cz <= pc_max[2]):
+                continue
+
             cls_id = int(clses_b[i])
+            yaw_val = float(rot_b[i])
+            size_x = float(dim_b[i, 1])  # length
+            size_y = float(dim_b[i, 0])  # width
+            size_z = float(dim_b[i, 2])
+
+            if y_axis_reference:
+                # Match CenterPointBBoxCoder.decode conversion when y-axis clockwise is used.
+                yaw_val = -yaw_val - math.pi / 2.0
+                size_x, size_y = size_y, size_x
+
             det = {
-                "translation": {
-                    "x": float(xs_b[i]),
-                    "y": float(ys_b[i]),
-                    "z": float(height_b[i]),
-                },
-                "size": {
-                    "x": float(dim_b[i, 1]),
-                    "y": float(dim_b[i, 0]),
-                    "z": float(dim_b[i, 2]),
-                },
-                "yaw": float(rot_b[i]),
+                "translation": {"x": cx, "y": cy, "z": cz},
+                "size": {"x": size_x, "y": size_y, "z": size_z},
+                "yaw": yaw_val,
                 "velocity": {"x": float(vel_b[i, 0]), "y": float(vel_b[i, 1])},
                 "score": score,
                 "label": cls_id,
@@ -394,42 +415,54 @@ def run_inference_onnx(
     score_threshold: float,
     class_names: Optional[Sequence[str]],
     output_shape: Tuple[int, int],
+    y_axis_reference: bool,
 ) -> Dict:
     point_cloud = load_points_from_csv(csv_path)
+    sess_voxel = ort.InferenceSession(str(onnx_voxel))
+    expected_dim = sess_voxel.get_inputs()[0].shape[-1]
+
+    # Determine base_dim (raw point feature dim) and whether to include distance
+    points_dim = point_cloud.points.shape[1]
+    candidate_base_dims = [points_dim, max(1, points_dim - 1)]
+    base_dim = None
+    include_distance = False
+
+    for base in candidate_base_dims:
+        # Try without distance
+        if base + 6 == expected_dim:
+            base_dim = base
+            include_distance = False
+            break
+        # Try with distance
+        if base + 7 == expected_dim:
+            base_dim = base
+            include_distance = True
+            break
+
+    if base_dim is None:
+        raise ValueError(
+            f"Cannot reconcile ONNX input dim {expected_dim} with point dims {points_dim}. "
+            "Try adjusting --grid-size/voxel params or ensure CSV columns match model expectations."
+        )
+
     voxels, num_points, coors = voxelize_points(
         points=point_cloud.points,
         voxel_size=voxel_size,
         point_cloud_range=point_cloud_range,
         max_points_per_voxel=max_points_per_voxel,
         max_voxels=max_voxels,
+        base_dim=base_dim,
     )
 
-    sess_voxel = ort.InferenceSession(str(onnx_voxel))
-    expected_dim = sess_voxel.get_inputs()[0].shape[-1]
-
-    # PillarFeatureNetONNX expects decorated features (10 dims default, 11 if with_distance=True)
     input_features = build_pillar_features(
         voxels=voxels,
         num_points=num_points,
         coors=coors,
         voxel_size=voxel_size,
         point_cloud_range=point_cloud_range,
-        include_distance=False,
+        include_distance=include_distance,
+        base_dim=base_dim,
     )
-    if expected_dim is not None and expected_dim != input_features.shape[2]:
-        if expected_dim == input_features.shape[2] + 1:
-            input_features = build_pillar_features(
-                voxels=voxels,
-                num_points=num_points,
-                coors=coors,
-                voxel_size=voxel_size,
-                point_cloud_range=point_cloud_range,
-                include_distance=True,
-            )
-        else:
-            raise ValueError(
-                f"ONNX voxel encoder expects last dim {expected_dim}, but built features {input_features.shape[2]}"
-            )
 
     voxel_inputs = {sess_voxel.get_inputs()[0].name: input_features}
     voxel_features = sess_voxel.run(None, voxel_inputs)[0]
@@ -455,6 +488,7 @@ def run_inference_onnx(
         score_threshold=score_threshold,
         class_names=class_names,
         topk=100,
+        y_axis_reference=y_axis_reference,
     )
 
     return {
@@ -509,6 +543,11 @@ def parse_args() -> argparse.Namespace:
         default=["car", "truck", "bus", "bicycle", "pedestrian"],
         help="Class names for decoding.",
     )
+    onnx_parser.add_argument(
+        "--y-axis-reference",
+        action="store_true",
+        help="Set if ONNX was exported with y-axis clockwise rotation reference (swap l/w and flip yaw).",
+    )
     return parser.parse_args()
 
 
@@ -535,6 +574,7 @@ def main() -> None:
             score_threshold=args.score_threshold,
             class_names=args.class_names,
             output_shape=(args.grid_size[0], args.grid_size[1]),
+            y_axis_reference=args.y_axis_reference,
         )
     if args.output:
         args.output.write_text(json.dumps(result, indent=2))

@@ -44,8 +44,8 @@ def _box_corners(cx: float, cy: float, w: float, l: float, yaw: float) -> np.nda
 
 
 def plot_bev(points: np.ndarray, detections: List[Dict], score_threshold: float, out_path: Path) -> None:
-    fig, ax = plt.subplots(figsize=(10, 10))
-    ax.scatter(points[:, 0], points[:, 1], s=0.2, c="gray", alpha=0.6, label="points")
+    fig, ax = plt.subplots(figsize=(25, 25))
+    ax.scatter(points[:, 0], points[:, 1], s=0.01, c="gray", alpha=1.0, label="points")
 
     for det in detections:
         if det.get("score", 0.0) < score_threshold:

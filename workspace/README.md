@@ -46,6 +46,7 @@ Defaults match CenterPoint T4 base v2.x deployment:
 - `max_points_per_voxel`: `32`, `max_voxels`: `96000`
 - `out_size_factor`: `2`, `grid_size`: `1020 1020`
 - `class_names`: `car truck bus bicycle pedestrian`
+- `--y-axis-reference`: set this if ONNX was exported with y-axis clockwise rotation (Autoware deploy option). It swaps L/W and flips yaw like the bbox coder.
 
 ## Run inference (PyTorch checkpoint, optional)
 
@@ -88,6 +89,11 @@ uv run python -m visualize_predictions \
 ```
 
 - BEVに点群 (x,y) を散布し、検出した3D bboxを赤枠＋ラベル/スコア付きで描画します。
+
+## Notes on ONNX input features
+
+- スクリプトは ONNX voxel encoder の入力チャネル数と CSV の列数（通常5: x,y,z,intensity,ring_id）から pillar 特徴量を構築します。
+- 入力11chを期待する場合は 5生特徴 + cluster/center(6) と判断し、ring_idを保持します。10chを期待する場合は 4生特徴として ring_id を無視し、距離チャンネルなしで 4+6=10 と合わせます。
 
 ## JSON output shape
 

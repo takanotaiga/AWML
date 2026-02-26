@@ -48,14 +48,14 @@ def check_webauto_version(webauto_path: str) -> None:
         raise Exception(f"Webauto version {current_version} is below required version {required_version}")
 
 
-def get_t4dataset_ids(config_path: str) -> list[str]:
+def get_t4dataset_ids(config_path: str) -> list[tuple[str, int]]:
     """
-    Get T4Dataset IDs like "0df0328e-39ea-42f1-844a-b455c91dc6cc".
+    Get T4Dataset IDs and versions from config.
 
     Args:
         config_path (str): The path to config.
 
-    Returns: list[str]
+    Returns: list[tuple[str, int]]
     """
     with open(config_path) as f:
         data_splits = yaml.safe_load(f)
@@ -66,14 +66,42 @@ def get_t4dataset_ids(config_path: str) -> list[str]:
 
     all_t4dataset_ids = set()
     for key in required_keys:
-        for t4dataset_ids in data_splits[key]:
-            t4dataset_ids = t4dataset_ids.split("   ")
-            if len(t4dataset_ids) == 2:
-                all_t4dataset_ids.add((t4dataset_ids[0], t4dataset_ids[1]))  # (id, version)
-            elif len(t4dataset_ids) == 1:
-                all_t4dataset_ids.add((t4dataset_ids[0], -1))  # -1 indicates no version specified
+        for t4dataset_entry in data_splits[key]:
+            if not isinstance(t4dataset_entry, str):
+                raise ValueError(f"Invalid T4Dataset entry type: {type(t4dataset_entry)}. Expected str.")
+
+            t4dataset_entry = t4dataset_entry.strip()
+            if not t4dataset_entry:
+                raise ValueError("T4Dataset entry must not be empty.")
+
+            # Support both historical format "id   version" and current "id/version".
+            if "   " in t4dataset_entry:
+                t4dataset_id, t4dataset_version_id = t4dataset_entry.split("   ", 1)
+            elif "/" in t4dataset_entry:
+                t4dataset_id, t4dataset_version_id = t4dataset_entry.rsplit("/", 1)
             else:
-                raise ValueError(f"Invalid T4Dataset format in {t4dataset_ids}. Use format 'id   version' or 'id'.")
+                t4dataset_id, t4dataset_version_id = t4dataset_entry, "-1"
+
+            t4dataset_id = t4dataset_id.strip()
+            t4dataset_version_id = t4dataset_version_id.strip()
+
+            if not t4dataset_id:
+                raise ValueError(f"Invalid T4Dataset ID in entry: {t4dataset_entry}")
+
+            if t4dataset_version_id in ("", "-1"):
+                all_t4dataset_ids.add((t4dataset_id, -1))
+                continue
+
+            try:
+                parsed_version_id = int(t4dataset_version_id)
+            except ValueError as exc:
+                raise ValueError(
+                    "Invalid T4Dataset format in {}. Use format 'id/version', 'id   version', or 'id'.".format(
+                        t4dataset_entry
+                    )
+                ) from exc
+
+            all_t4dataset_ids.add((t4dataset_id, parsed_version_id))
     return list(all_t4dataset_ids)
 
 

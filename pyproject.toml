@@ -6,9 +6,9 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "numpy>=1.24.0,<2",
-    "torch @ https://download.pytorch.org/whl/cu118/torch-2.1.0%2Bcu118-cp311-cp311-linux_x86_64.whl",
+    "torch @ https://download.pytorch.org/whl/cu128/torch-2.7.1%2Bcu128-cp311-cp311-manylinux_2_28_x86_64.whl",
     "mmengine==0.10.7",
-    "mmcv @ https://download.openmmlab.com/mmcv/dist/cu118/torch2.1.0/mmcv-2.1.0-cp311-cp311-manylinux1_x86_64.whl",
+    "mmcv==2.1.0",
     "mmdet==3.3.0",
     "mmdet3d==1.4.0",
     "mlflow>=2.0.0",
@@ -17,3 +17,6 @@ dependencies = [
     "matplotlib==3.9.2",
     "onnxruntime>=1.18.0",
 ]
+
+[tool.uv.extra-build-dependencies]
+mmcv = ["setuptools<81"]

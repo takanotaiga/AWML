@@ -87,6 +87,8 @@ def main():
     start_time = time.time()
 
     args = parse_args()
+    # PyTorch >= 2.6 loads checkpoints with weights_only=True by default.
+    os.environ.setdefault("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")
 
     # load config
     cfg = Config.fromfile(args.config)
@@ -119,6 +121,10 @@ def main():
         assert "tta_pipeline" in cfg, "Cannot find ``tta_pipeline`` in config."
         cfg.test_dataloader.dataset.pipeline = cfg.tta_pipeline
         cfg.model = ConfigDict(**cfg.tta_model, module=cfg.model)
+
+    if cfg.get("randomness", {}).get("deterministic", False):
+        # deterministic=True requires CuBLAS workspace configuration on CUDA.
+        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
 
     # Update the checkpoint path in the config
     cfg.test_evaluator.checkpoint_path = args.checkpoint

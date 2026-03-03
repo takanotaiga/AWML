@@ -59,6 +59,9 @@ def build_prediction_runner(args) -> PredictionRunner:
 if __name__ == "__main__":
     """Run an InferenceRunner."""
     args = parse_args()
+    os.environ.setdefault("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")
+    if args.device == "gpu":
+        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
 
     # Build PredictionRunner
     prediction_runner = build_prediction_runner(args=args)

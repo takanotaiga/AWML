@@ -2,7 +2,6 @@ custom_imports = dict(
     imports=[
         "autoware_ml.detection3d.datasets.t4dataset",
         "autoware_ml.detection3d.evaluation.t4metric.t4metric",
-        "autoware_ml.detection3d.evaluation.t4metric.t4metric_v2",
     ]
 )
 

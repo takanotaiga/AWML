@@ -5,12 +5,15 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "numpy>=1.24.0",
-    "torch>=2.3.0",
+    "numpy>=1.24.0,<2",
+    "torch @ https://download.pytorch.org/whl/cu118/torch-2.1.0%2Bcu118-cp311-cp311-linux_x86_64.whl",
     "mmengine==0.10.7",
-    "mmcv==2.1.0",
+    "mmcv @ https://download.openmmlab.com/mmcv/dist/cu118/torch2.1.0/mmcv-2.1.0-cp311-cp311-manylinux1_x86_64.whl",
     "mmdet==3.3.0",
     "mmdet3d==1.4.0",
-    "matplotlib==3.8.4",
+    "mlflow>=2.0.0",
+    "perception-dataset @ git+https://github.com/tier4/tier4_perception_dataset.git",
+    "polars",
+    "matplotlib==3.9.2",
     "onnxruntime>=1.18.0",
 ]

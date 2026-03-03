@@ -1,0 +1,8 @@
+version: 1
+dataset_version: db-j6-v1.0
+train:
+- 071eacac-ef6a-49ff-94d2-f4e171548d3b/2/unknown/unknown
+val:
+- 4c261b07-53f2-4f37-a153-c072824b2d25/2/unknown/unknown
+test:
+- 43e6e09a-93ce-488f-8f40-515187bc2753/2/unknown/unknown

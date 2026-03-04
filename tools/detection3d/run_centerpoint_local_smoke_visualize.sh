@@ -47,9 +47,8 @@ RUNTIME_MODEL_CFG_PATH="${MODEL_CFG_PATH}"
 TMP_CFG_PATH=""
 WORK_DIR="${WORK_DIR:-work_dirs/centerpoint/local_smoke_visualize}"
 MAX_WORKERS="${MAX_WORKERS:-2}"
-FRAME_START="${FRAME_START:-0}"
-FRAME_END="${FRAME_END:-2}"
 CENTERPOINT_DEVICE="${CENTERPOINT_DEVICE:-gpu}"
+MP4_FPS="${MP4_FPS:-10}"
 
 export UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/uv_cache}"
 export PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
@@ -142,6 +141,58 @@ uv run --offline --no-sync python tools/detection3d/visualize_bboxes.py \
   --device "${CENTERPOINT_DEVICE}" \
   --data-root "${DATA_ROOT}" \
   --ann-file-path "${ANN_FILE_PATH}" \
-  --frame-range "${FRAME_START}" "${FRAME_END}" \
   --work-dir "${WORK_DIR}" \
   --max_workers "${MAX_WORKERS}"
+
+if ! command -v ffmpeg >/dev/null 2>&1; then
+  echo "ffmpeg is required to export mp4 files, but it was not found in PATH." >&2
+  exit 1
+fi
+
+VIS_DIR="${WORK_DIR}/vis"
+if [[ ! -d "${VIS_DIR}" ]]; then
+  latest_run_dir="$(find "${WORK_DIR}" -mindepth 1 -maxdepth 1 -type d | sort | tail -n 1 || true)"
+  if [[ -n "${latest_run_dir}" && -d "${latest_run_dir}/vis" ]]; then
+    VIS_DIR="${latest_run_dir}/vis"
+  fi
+fi
+if [[ ! -d "${VIS_DIR}" ]]; then
+  echo "Visualization output directory not found: ${VIS_DIR}" >&2
+  exit 1
+fi
+
+mapfile -t SCENE_DIRS < <(
+  find "${VIS_DIR}" -type f \( -name "*_bev.png" -o -name "*_cam.png" \) -printf '%h\n' | sort -u
+)
+
+if [[ "${#SCENE_DIRS[@]}" -eq 0 ]]; then
+  echo "No visualization PNG files found under: ${VIS_DIR}" >&2
+  exit 1
+fi
+
+for scene_dir in "${SCENE_DIRS[@]}"; do
+  for kind in bev cam; do
+    list_file="$(mktemp)"
+    while IFS= read -r png_path; do
+      abs_png_path="$(realpath "${png_path}")"
+      escaped_path=${abs_png_path//\'/\'\\\'\'}
+      printf "file '%s'\n" "${escaped_path}" >> "${list_file}"
+    done < <(find "${scene_dir}" -maxdepth 1 -type f -name "*_${kind}.png" | sort)
+
+    if [[ ! -s "${list_file}" ]]; then
+      rm -f "${list_file}"
+      continue
+    fi
+
+    out_mp4="${scene_dir}/${kind}.mp4"
+    ffmpeg -y -hide_banner -loglevel error \
+      -r "${MP4_FPS}" \
+      -f concat \
+      -safe 0 \
+      -i "${list_file}" \
+      -vf "fps=${MP4_FPS},format=yuv420p,scale=trunc(iw/2)*2:trunc(ih/2)*2" \
+      "${out_mp4}"
+    rm -f "${list_file}"
+    echo "Saved mp4: ${out_mp4}"
+  done
+done

@@ -88,7 +88,7 @@ class DecodedBboxes:
         ax = fig.add_subplot(grid_spec[-1, :], facecolor="white")
         ax.set_xlim(*xlim)
         ax.set_ylim(*ylim)
-        ax.set_aspect("auto")
+        ax.set_aspect("equal", adjustable="box")
 
         ax.scatter(
             self.lidar_pointclouds[:, 0],
@@ -181,7 +181,12 @@ class DecodedBboxes:
         # Metadata about image
         h, w, _ = img.shape
         img_size = (w, h)
-        ax_title = img_path.split("/")[img_title_index]
+        path_parts = Path(img_path).parts
+        camera_name = next((part for part in reversed(path_parts) if part.upper().startswith("CAM")), "")
+        if camera_name:
+            ax_title = camera_name
+        else:
+            ax_title = img_path.split("/")[img_title_index]
 
         corners_2d = self.project_lidar_bboxex_to_img(lidar2img=lidar2img)
         edge_color_norms = []
@@ -254,12 +259,19 @@ class DecodedBboxes:
         """
         lidar2imgs = self.compute_lidar_to_imgs()
         assert len(self.img_paths) == len(lidar2imgs)
+        def _camera_sort_key(img_and_lidar2img: Tuple[str, npt.NDArray[np.float64]]) -> str:
+            img_path = img_and_lidar2img[0]
+            path_parts = Path(img_path).parts
+            camera_name = next((part for part in reversed(path_parts) if part.upper().startswith("CAM")), "")
+            return camera_name if camera_name else img_path
+
+        sorted_img_and_lidar2imgs = sorted(
+            zip(self.img_paths, lidar2imgs),
+            key=_camera_sort_key,
+        )
         selected_row = 0
         for index, (img_path, lidar2img) in enumerate(
-            zip(
-                self.img_paths,
-                lidar2imgs,
-            )
+            sorted_img_and_lidar2imgs
         ):
             selected_col = index % spec_cols
             selected_row = index // spec_cols
@@ -326,6 +338,72 @@ class DecodedBboxes:
         )
         plt.close()
 
+    def visualize_bboxes_lidar_only(
+        self,
+        fpath: str,
+        xlim: Tuple[float, float],
+        ylim: Tuple[float, float],
+        fig_size: Tuple[int, int] = (8, 8),
+    ) -> None:
+        """
+        Visualize bboxes only in lidar BEV.
+        :param fpath: Path to save the visualization.
+        :param xlim: x-axis range for lidar.
+        :param ylim: y-axis range for lidar.
+        :param fig_size: Figure size.
+        """
+        fig = plt.figure(figsize=fig_size)
+        grid_spec = fig.add_gridspec(1, 1)
+        self.visualize_bboxes_to_lidar(
+            fig=fig,
+            grid_spec=grid_spec,
+            xlim=xlim,
+            ylim=ylim,
+            draw_front=True,
+        )
+        plt.tight_layout()
+        plt.savefig(
+            fname=fpath,
+            format="png",
+            dpi=400,
+            bbox_inches="tight",
+        )
+        plt.close()
+
+    def visualize_bboxes_camera_only(
+        self,
+        fpath: str,
+        spec_cols: int = 3,
+        alpha: float = 0.8,
+        fig_size: Tuple[int, int] = (15, 10),
+    ) -> None:
+        """
+        Visualize bboxes only on camera images.
+        :param fpath: Path to save the visualization.
+        :param spec_cols: Number of columns for gridspec in the visualization.
+        :param alpha: Transparency of polygons in images.
+        :param fig_size: Figure size.
+        """
+        if len(self.img_paths) == 0:
+            return
+
+        image_rows = ceil(len(self.img_paths) / spec_cols)
+        fig = plt.figure(figsize=fig_size)
+        grid_spec = fig.add_gridspec(image_rows, spec_cols)
+        self.visualize_bboxes_to_images(
+            fig=fig,
+            grid_spec=grid_spec,
+            spec_cols=spec_cols,
+            alpha=alpha,
+        )
+        plt.tight_layout()
+        plt.savefig(
+            fname=fpath,
+            format="png",
+            bbox_inches="tight",
+        )
+        plt.close()
+
 
 @dataclass(frozen=True)
 class BatchDecodedBboxes:
@@ -345,12 +423,19 @@ class BatchDecodedBboxes:
         scene_path = vis_dir / self.scene_name
         scene_path.mkdir(exist_ok=True, parents=True)
 
-        lidar_fpath = scene_path / self.lidar_filename
+        lidar_stem = Path(self.lidar_filename).stem
+        lidar_fpath = scene_path / f"{lidar_stem}_bev.png"
+        camera_fpath = scene_path / f"{lidar_stem}_cam.png"
 
-        # Visualize bboxes in both cameras and bev
-        self.decoded_bboxes.visualize_bboxes(
+        # Visualize bboxes only in bev
+        self.decoded_bboxes.visualize_bboxes_lidar_only(
             fpath=lidar_fpath,
             xlim=xlim,
             ylim=ylim,
+        )
+
+        # Visualize bboxes only in camera views
+        self.decoded_bboxes.visualize_bboxes_camera_only(
+            fpath=camera_fpath,
             alpha=0.5,
         )

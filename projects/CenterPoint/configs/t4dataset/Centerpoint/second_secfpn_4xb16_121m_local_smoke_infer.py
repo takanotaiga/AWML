@@ -1,5 +1,5 @@
 _base_ = [
-    "./second_secfpn_4xb16_121m_base_amp_v210.py",
+    "./second_secfpn_4xb16_121m_j6gen2_base_amp.py",
 ]
 
 # Local inference config for /home/taiga/ml_lake/t4-dataset smoke split.
@@ -23,13 +23,13 @@ test_pipeline = [
         type="LoadPointsFromMultiSweeps",
         sweeps_num=1,
         load_dim=5,
-        use_dim=[0, 1, 2, 4],
+        use_dim=[0, 1, 2, 3, 4],
         pad_empty_sweeps=True,
         remove_close=True,
         backend_args=None,
         test_mode=True,
     ),
-    dict(type="PointsRangeFilter", point_cloud_range=[-121.6, -121.6, -3.0, 121.6, 121.6, 5.0]),
+    dict(type="PointsRangeFilter", point_cloud_range=[-122.4, -122.4, -3.0, 122.4, 122.4, 5.0]),
     dict(
         type="Pack3DDetInputs",
         keys=["points", "gt_bboxes_3d", "gt_labels_3d"],

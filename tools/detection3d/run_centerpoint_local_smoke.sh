@@ -6,8 +6,9 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 cd "${REPO_ROOT}"
 
 DATA_ROOT="${1:-/home/taiga/ml_lake/t4-dataset}"
-CHECKPOINT_PATH="${2:-${REPO_ROOT}/work_dirs/checkpoints/centerpoint_t4base_v2.1.0_best.pth}"
-CHECKPOINT_URL="https://download.autoware-ml-model-zoo.tier4.jp/autoware-ml/models/centerpoint/centerpoint/t4base/v2.1.0/best_NuScenes_metric_T4Metric_mAP_epoch_49.pth"
+CHECKPOINT_PATH="${2:-${REPO_ROOT}/work_dirs/checkpoints/centerpoint_j6gen2_v2.5.1_best.pth}"
+CHECKPOINT_URL="https://download.autoware-ml-model-zoo.tier4.jp/autoware-ml/models/centerpoint/centerpoint/j6gen2/v2.5.1/best_NuScenes_metric_T4Metric_mAP_epoch_29.pth"
+CHECKPOINT_LOGS_URL="https://download.autoware-ml-model-zoo.tier4.jp/autoware-ml/models/centerpoint/centerpoint/j6gen2/v2.5.1/logs.zip"
 INFO_OUT_DIR="${DATA_ROOT}/info/local_smoke"
 CENTERPOINT_DEVICE="${CENTERPOINT_DEVICE:-cuda}"
 
@@ -46,7 +47,46 @@ fi
 
 if [[ ! -f "${CHECKPOINT_PATH}" ]]; then
   echo "Downloading checkpoint to ${CHECKPOINT_PATH}"
-  curl -fL "${CHECKPOINT_URL}" -o "${CHECKPOINT_PATH}"
+  if ! curl -fL "${CHECKPOINT_URL}" -o "${CHECKPOINT_PATH}"; then
+    echo "Direct checkpoint URL is unavailable. Falling back to logs.zip from model-zoo."
+    CHECKPOINT_LOGS_ZIP="${CHECKPOINT_PATH%.pth}_logs.zip"
+    curl -fL "${CHECKPOINT_LOGS_URL}" -o "${CHECKPOINT_LOGS_ZIP}"
+    uv run --offline --no-sync python - "${CHECKPOINT_LOGS_ZIP}" "${CHECKPOINT_PATH}" <<'PY'
+import os
+import re
+import shutil
+import sys
+import zipfile
+
+zip_path = sys.argv[1]
+out_path = sys.argv[2]
+
+with zipfile.ZipFile(zip_path) as zf:
+    pth_names = [n for n in zf.namelist() if n.endswith(".pth")]
+    if not pth_names:
+        raise RuntimeError(f"No .pth file found in {zip_path}")
+
+    def score(path: str) -> tuple[int, int]:
+        name = os.path.basename(path).lower()
+        priority = 0
+        if "best" in name:
+            priority += 1000
+        if "t4metric" in name:
+            priority += 100
+        if "nuscenes" in name:
+            priority += 50
+        m = re.search(r"epoch[_-]?(\d+)", name)
+        epoch = int(m.group(1)) if m else -1
+        return (priority, epoch)
+
+    pth_names.sort(key=score, reverse=True)
+    selected = pth_names[0]
+    print(f"Extracting checkpoint from logs.zip: {selected}")
+    with zf.open(selected) as src, open(out_path, "wb") as dst:
+        shutil.copyfileobj(src, dst)
+PY
+    rm -f "${CHECKPOINT_LOGS_ZIP}"
+  fi
 fi
 
 echo "[1/2] Creating local smoke infos"

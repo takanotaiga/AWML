@@ -6,7 +6,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 cd "${REPO_ROOT}"
 
 DATA_ROOT="${1:-/home/taiga/ml_lake/t4-dataset}"
-CHECKPOINT_PATH="${2:-${REPO_ROOT}/work_dirs/checkpoints/centerpoint_t4base_v2.1.0_best.pth}"
+CHECKPOINT_PATH="${2:-${REPO_ROOT}/work_dirs/checkpoints/centerpoint_j6gen2_v2.5.1_best.pth}"
 ANN_FILE_PATH="${3:-info/local_smoke/t4dataset_local_smoke_infos_test.pkl}"
 MODEL_CFG_PATH="${MODEL_CFG_PATH:-projects/CenterPoint/configs/t4dataset/Centerpoint/second_secfpn_4xb16_121m_local_smoke_infer.py}"
 WORK_DIR="${WORK_DIR:-work_dirs/centerpoint/local_smoke_visualize}"

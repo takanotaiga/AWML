@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "numpy>=1.24.0,<2",
+    "ninja>=1.11.0",
     "torch @ https://download.pytorch.org/whl/cu128/torch-2.7.1%2Bcu128-cp311-cp311-manylinux_2_28_x86_64.whl",
     "mmengine==0.10.7",
     "mmcv==2.1.0",

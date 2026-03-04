@@ -5,12 +5,49 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 cd "${REPO_ROOT}"
 
+ZERO_INTENSITY=0
+POSITIONAL_ARGS=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --zero)
+      ZERO_INTENSITY=1
+      shift
+      ;;
+    -h|--help)
+      cat <<'EOF'
+Usage: run_centerpoint_local_smoke.sh [--zero] [DATA_ROOT] [CHECKPOINT_PATH]
+
+Options:
+  --zero    Set intensity channel to zero during inference.
+EOF
+      exit 0
+      ;;
+    --)
+      shift
+      POSITIONAL_ARGS+=("$@")
+      break
+      ;;
+    -*)
+      echo "Unknown option: $1" >&2
+      exit 1
+      ;;
+    *)
+      POSITIONAL_ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
+set -- "${POSITIONAL_ARGS[@]}"
+
 DATA_ROOT="${1:-/home/taiga/ml_lake/t4-dataset}"
 CHECKPOINT_PATH="${2:-${REPO_ROOT}/work_dirs/checkpoints/centerpoint_j6gen2_v2.5.1_best.pth}"
 CHECKPOINT_URL="https://download.autoware-ml-model-zoo.tier4.jp/autoware-ml/models/centerpoint/centerpoint/j6gen2/v2.5.1/best_NuScenes_metric_T4Metric_mAP_epoch_29.pth"
 CHECKPOINT_LOGS_URL="https://download.autoware-ml-model-zoo.tier4.jp/autoware-ml/models/centerpoint/centerpoint/j6gen2/v2.5.1/logs.zip"
 INFO_OUT_DIR="${DATA_ROOT}/info/local_smoke"
 CENTERPOINT_DEVICE="${CENTERPOINT_DEVICE:-cuda}"
+MODEL_CFG_PATH="projects/CenterPoint/configs/t4dataset/Centerpoint/second_secfpn_4xb16_121m_local_smoke_infer.py"
+RUNTIME_MODEL_CFG_PATH="${MODEL_CFG_PATH}"
+TMP_CFG_PATH=""
 
 export UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/uv_cache}"
 export PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
@@ -24,6 +61,39 @@ if [[ "${CENTERPOINT_DEVICE}" == "cpu" ]]; then
 else
   # deterministic=True in runtime config requires CuBLAS workspace setting on CUDA.
   export CUBLAS_WORKSPACE_CONFIG="${CUBLAS_WORKSPACE_CONFIG:-:4096:8}"
+fi
+
+if [[ "${ZERO_INTENSITY}" == "1" ]]; then
+  echo "Enabling intensity zero-fill mode (--zero)."
+  TMP_CFG_PATH="$(uv run --offline --no-sync python - "${MODEL_CFG_PATH}" <<'PY'
+import sys
+import tempfile
+from mmengine.config import Config
+
+src = sys.argv[1]
+cfg = Config.fromfile(src)
+pipeline = list(cfg.test_dataloader.dataset.pipeline)
+
+insert_idx = None
+for idx, step in enumerate(pipeline):
+    if isinstance(step, dict) and step.get("type") == "LoadPointsFromMultiSweeps":
+        insert_idx = idx + 1
+        break
+
+if insert_idx is None:
+    raise RuntimeError("LoadPointsFromMultiSweeps not found in test pipeline.")
+
+pipeline.insert(insert_idx, dict(type="SetInferenceIntensityZero"))
+cfg.test_dataloader.dataset.pipeline = pipeline
+cfg.test_pipeline = pipeline
+
+with tempfile.NamedTemporaryFile(prefix="centerpoint_local_smoke_zero_", suffix=".py", delete=False) as fp:
+    cfg.dump(fp.name)
+    print(fp.name)
+PY
+)"
+  RUNTIME_MODEL_CFG_PATH="${TMP_CFG_PATH}"
+  trap 'if [[ -n "${TMP_CFG_PATH}" && -f "${TMP_CFG_PATH}" ]]; then rm -f "${TMP_CFG_PATH}"; fi' EXIT
 fi
 
 if ! uv run --offline --no-sync python - <<'PY'
@@ -100,6 +170,6 @@ uv run --offline --no-sync python tools/detection3d/create_data_t4dataset.py \
 
 echo "[2/2] Running CenterPoint inference"
 uv run --offline --no-sync python tools/detection3d/test.py \
-  projects/CenterPoint/configs/t4dataset/Centerpoint/second_secfpn_4xb16_121m_local_smoke_infer.py \
+  "${RUNTIME_MODEL_CFG_PATH}" \
   "${CHECKPOINT_PATH}" \
   --work-dir work_dirs/centerpoint/local_smoke_infer

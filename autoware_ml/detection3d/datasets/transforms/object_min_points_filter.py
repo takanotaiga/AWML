@@ -122,3 +122,21 @@ class ObjectRangeMinPointsFilter(BaseTransform):
         repr_str = self.__class__.__name__
         repr_str += f"(range_radius={self.range_radius}, min_num_points={self.min_num_points})"
         return repr_str
+
+
+@TRANSFORMS.register_module()
+class SetInferenceIntensityZero(BaseTransform):
+    """Set intensity channel (index 3) to zero for inference experiments."""
+
+    def transform(self, input_dict: dict) -> dict:
+        points = input_dict.get("points")
+        if points is None:
+            return input_dict
+
+        points_tensor = points.tensor
+        if points_tensor.size(1) > 3:
+            points_tensor[:, 3] = 0
+        return input_dict
+
+    def __repr__(self) -> str:
+        return self.__class__.__name__

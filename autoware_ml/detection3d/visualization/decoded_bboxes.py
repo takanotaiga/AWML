@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from math import ceil
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 import numpy.typing as npt
@@ -428,7 +428,35 @@ class BatchDecodedBboxes:
 
     scene_name: str
     lidar_filename: str
-    decoded_bboxes: DecodedBboxes
+    inf_decoded_bboxes: DecodedBboxes
+    gt_decoded_bboxes: Optional[DecodedBboxes] = None
+
+    def _visualize_one_type(
+        self,
+        decoded_bboxes: DecodedBboxes,
+        output_root: Path,
+        xlim: Tuple[int, int],
+        ylim: Tuple[int, int],
+    ) -> None:
+        output_root.mkdir(exist_ok=True, parents=True)
+        bev_scene_path = output_root / "BEV"
+        cam_scene_path = output_root / "CAM"
+        bev_scene_path.mkdir(exist_ok=True, parents=True)
+        cam_scene_path.mkdir(exist_ok=True, parents=True)
+
+        lidar_stem = Path(self.lidar_filename).stem
+        lidar_fpath = bev_scene_path / f"{lidar_stem}.png"
+        camera_fpath = cam_scene_path / f"{lidar_stem}.png"
+
+        decoded_bboxes.visualize_bboxes_lidar_only(
+            fpath=lidar_fpath,
+            xlim=xlim,
+            ylim=ylim,
+        )
+        decoded_bboxes.visualize_bboxes_camera_only(
+            fpath=camera_fpath,
+            alpha=0.5,
+        )
 
     def visualize(
         self,
@@ -439,24 +467,16 @@ class BatchDecodedBboxes:
         """ """
         scene_path = vis_dir / self.scene_name
         scene_path.mkdir(exist_ok=True, parents=True)
-        bev_scene_path = scene_path / "bev"
-        cam_scene_path = scene_path / "cam"
-        bev_scene_path.mkdir(exist_ok=True, parents=True)
-        cam_scene_path.mkdir(exist_ok=True, parents=True)
-
-        lidar_stem = Path(self.lidar_filename).stem
-        lidar_fpath = bev_scene_path / f"{lidar_stem}.png"
-        camera_fpath = cam_scene_path / f"{lidar_stem}.png"
-
-        # Visualize bboxes only in bev
-        self.decoded_bboxes.visualize_bboxes_lidar_only(
-            fpath=lidar_fpath,
+        self._visualize_one_type(
+            decoded_bboxes=self.inf_decoded_bboxes,
+            output_root=scene_path / "Inf",
             xlim=xlim,
             ylim=ylim,
         )
-
-        # Visualize bboxes only in camera views
-        self.decoded_bboxes.visualize_bboxes_camera_only(
-            fpath=camera_fpath,
-            alpha=0.5,
-        )
+        if self.gt_decoded_bboxes is not None:
+            self._visualize_one_type(
+                decoded_bboxes=self.gt_decoded_bboxes,
+                output_root=scene_path / "GT",
+                xlim=xlim,
+                ylim=ylim,
+            )

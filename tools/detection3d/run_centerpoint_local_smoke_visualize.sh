@@ -161,40 +161,38 @@ if [[ ! -d "${VIS_DIR}" ]]; then
   exit 1
 fi
 
-mapfile -t SCENE_DIRS < <(
-  find "${VIS_DIR}" -mindepth 2 -maxdepth 2 -type d \( -name "bev" -o -name "cam" \) -printf '%h\n' | sort -u
+mapfile -t RENDER_DIRS < <(
+  find "${VIS_DIR}" -type d \( -name "BEV" -o -name "CAM" -o -name "bev" -o -name "cam" \) | sort
 )
 
-if [[ "${#SCENE_DIRS[@]}" -eq 0 ]]; then
-  echo "No visualization scene directories found under: ${VIS_DIR}" >&2
+if [[ "${#RENDER_DIRS[@]}" -eq 0 ]]; then
+  echo "No visualization render directories found under: ${VIS_DIR}" >&2
   exit 1
 fi
 
-for scene_root in "${SCENE_DIRS[@]}"; do
-  for kind in bev cam; do
-    scene_dir="${scene_root}/${kind}"
-    [[ -d "${scene_dir}" ]] || continue
-    list_file="$(mktemp)"
-    while IFS= read -r png_path; do
-      abs_png_path="$(realpath "${png_path}")"
-      escaped_path=${abs_png_path//\'/\'\\\'\'}
-      printf "file '%s'\n" "${escaped_path}" >> "${list_file}"
-    done < <(find "${scene_dir}" -maxdepth 1 -type f -name "*.png" | sort)
+for render_dir in "${RENDER_DIRS[@]}"; do
+  kind="$(basename "${render_dir}")"
+  kind_lower="$(printf "%s" "${kind}" | tr '[:upper:]' '[:lower:]')"
+  list_file="$(mktemp)"
+  while IFS= read -r png_path; do
+    abs_png_path="$(realpath "${png_path}")"
+    escaped_path=${abs_png_path//\'/\'\\\'\'}
+    printf "file '%s'\n" "${escaped_path}" >> "${list_file}"
+  done < <(find "${render_dir}" -maxdepth 1 -type f -name "*.png" | sort)
 
-    if [[ ! -s "${list_file}" ]]; then
-      rm -f "${list_file}"
-      continue
-    fi
-
-    out_mp4="${scene_dir}/${kind}.mp4"
-    ffmpeg -y -hide_banner -loglevel error \
-      -r "${MP4_FPS}" \
-      -f concat \
-      -safe 0 \
-      -i "${list_file}" \
-      -vf "fps=${MP4_FPS},format=yuv420p,scale=trunc(iw/2)*2:trunc(ih/2)*2" \
-      "${out_mp4}"
+  if [[ ! -s "${list_file}" ]]; then
     rm -f "${list_file}"
-    echo "Saved mp4: ${out_mp4}"
-  done
+    continue
+  fi
+
+  out_mp4="${render_dir}/${kind_lower}.mp4"
+  ffmpeg -y -hide_banner -loglevel error \
+    -r "${MP4_FPS}" \
+    -f concat \
+    -safe 0 \
+    -i "${list_file}" \
+    -vf "fps=${MP4_FPS},format=yuv420p,scale=trunc(iw/2)*2:trunc(ih/2)*2" \
+    "${out_mp4}"
+  rm -f "${list_file}"
+  echo "Saved mp4: ${out_mp4}"
 done

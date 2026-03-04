@@ -151,26 +151,26 @@ class PredictionRunner(BaseRunner):
         output: Det3DDataSample,
         lidar_pointclouds: npt.NDArray[np.float64],
         data_sample: Det3DDataSample,
-    ) -> BatchDecodedBboxes:
+    ) -> Tuple[DecodedBboxes, Optional[DecodedBboxes]]:
         """
         Decode outputs from a model and save their metadata into DecodedBboxes.
         :param outputs: Output from a model in Det3DDataSample.
         :param lidar_pointcloud: Lidar pointclouds.
         :param data_sample: Groundtruth and metadata from input.
-        :return Decoded predictions.
+        :return Tuple of decoded predictions and decoded ground truths.
         """
         bboxes = output.pred_instances_3d["bboxes_3d"].tensor.detach().cpu()
         scores = output.pred_instances_3d["scores_3d"].detach().cpu()
         labels = output.pred_instances_3d["labels_3d"].detach().cpu()
-        lidar_bboxes = LiDARInstance3DBoxes(bboxes, box_dim=9)
+        pred_lidar_bboxes = LiDARInstance3DBoxes(bboxes, box_dim=9)
         img_paths = data_sample.img_path if all(data_sample.img_path) else []
         full_img_paths = [
             os.path.join(self._cfg.test_dataloader.dataset.data_root, img_path) for img_path in img_paths
         ]
         lidar2cam = data_sample.lidar2cam if hasattr(data_sample, "lidar2cam") else []
         cam2img = data_sample.cam2img if hasattr(data_sample, "cam2img") else []
-        return DecodedBboxes(
-            lidar_bboxes=lidar_bboxes,
+        pred_decoded_bboxes = DecodedBboxes(
+            lidar_bboxes=pred_lidar_bboxes,
             lidar_pointclouds=lidar_pointclouds,
             labels=labels,
             scores=scores,
@@ -179,6 +179,48 @@ class PredictionRunner(BaseRunner):
             lidar2cams=lidar2cam,
             cam2imgs=cam2img,
         )
+
+        gt_lidar_bboxes = None
+        gt_labels = None
+
+        if hasattr(data_sample, "gt_instances_3d"):
+            gt_instances_3d = data_sample.gt_instances_3d
+            if hasattr(gt_instances_3d, "bboxes_3d") and hasattr(gt_instances_3d, "labels_3d"):
+                gt_lidar_bboxes = gt_instances_3d.bboxes_3d
+                gt_labels = gt_instances_3d.labels_3d
+
+        if gt_lidar_bboxes is None or gt_labels is None:
+            eval_ann_info = data_sample.eval_ann_info if hasattr(data_sample, "eval_ann_info") else None
+            if eval_ann_info is not None:
+                if gt_lidar_bboxes is None and "gt_bboxes_3d" in eval_ann_info:
+                    gt_lidar_bboxes = eval_ann_info["gt_bboxes_3d"]
+                if gt_labels is None and "gt_labels_3d" in eval_ann_info:
+                    gt_labels = eval_ann_info["gt_labels_3d"]
+
+        gt_decoded_bboxes = None
+        if gt_lidar_bboxes is not None and gt_labels is not None:
+            if isinstance(gt_lidar_bboxes, LiDARInstance3DBoxes):
+                gt_lidar_boxes_3d = gt_lidar_bboxes
+            elif hasattr(gt_lidar_bboxes, "tensor"):
+                gt_tensor = gt_lidar_bboxes.tensor.detach().cpu()
+                gt_lidar_boxes_3d = LiDARInstance3DBoxes(gt_tensor, box_dim=gt_tensor.shape[-1])
+            else:
+                gt_tensor = torch.as_tensor(gt_lidar_bboxes).detach().cpu()
+                gt_lidar_boxes_3d = LiDARInstance3DBoxes(gt_tensor, box_dim=gt_tensor.shape[-1])
+
+            gt_labels_tensor = torch.as_tensor(gt_labels).detach().cpu()
+            gt_decoded_bboxes = DecodedBboxes(
+                lidar_bboxes=gt_lidar_boxes_3d,
+                lidar_pointclouds=lidar_pointclouds,
+                labels=gt_labels_tensor,
+                scores=torch.ones_like(gt_labels_tensor, dtype=torch.float32),
+                class_names=self._cfg.class_names,
+                img_paths=full_img_paths,
+                lidar2cams=lidar2cam,
+                cam2imgs=cam2img,
+            )
+
+        return pred_decoded_bboxes, gt_decoded_bboxes
 
     def predict(
         self,
@@ -214,7 +256,7 @@ class PredictionRunner(BaseRunner):
                 with autocast(enabled=True):
                     outputs = model.test_step(data)
 
-                decoded_bboxes = self._decode_outputs(
+                inf_decoded_bboxes, gt_decoded_bboxes = self._decode_outputs(
                     output=outputs[0],
                     lidar_pointclouds=data["inputs"]["points"][0],
                     data_sample=data["data_samples"][0],
@@ -224,7 +266,8 @@ class PredictionRunner(BaseRunner):
                     BatchDecodedBboxes(
                         scene_name=scene_name,
                         lidar_filename=lidar_filename,
-                        decoded_bboxes=decoded_bboxes,
+                        inf_decoded_bboxes=inf_decoded_bboxes,
+                        gt_decoded_bboxes=gt_decoded_bboxes,
                     )
                 )
 

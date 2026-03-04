@@ -162,22 +162,24 @@ if [[ ! -d "${VIS_DIR}" ]]; then
 fi
 
 mapfile -t SCENE_DIRS < <(
-  find "${VIS_DIR}" -type f \( -name "*_bev.png" -o -name "*_cam.png" \) -printf '%h\n' | sort -u
+  find "${VIS_DIR}" -mindepth 2 -maxdepth 2 -type d \( -name "bev" -o -name "cam" \) -printf '%h\n' | sort -u
 )
 
 if [[ "${#SCENE_DIRS[@]}" -eq 0 ]]; then
-  echo "No visualization PNG files found under: ${VIS_DIR}" >&2
+  echo "No visualization scene directories found under: ${VIS_DIR}" >&2
   exit 1
 fi
 
-for scene_dir in "${SCENE_DIRS[@]}"; do
+for scene_root in "${SCENE_DIRS[@]}"; do
   for kind in bev cam; do
+    scene_dir="${scene_root}/${kind}"
+    [[ -d "${scene_dir}" ]] || continue
     list_file="$(mktemp)"
     while IFS= read -r png_path; do
       abs_png_path="$(realpath "${png_path}")"
       escaped_path=${abs_png_path//\'/\'\\\'\'}
       printf "file '%s'\n" "${escaped_path}" >> "${list_file}"
-    done < <(find "${scene_dir}" -maxdepth 1 -type f -name "*_${kind}.png" | sort)
+    done < <(find "${scene_dir}" -maxdepth 1 -type f -name "*.png" | sort)
 
     if [[ ! -s "${list_file}" ]]; then
       rm -f "${list_file}"

@@ -73,7 +73,7 @@ class DecodedBboxes:
         xlim: Tuple[int, int],
         ylim: Tuple[int, int],
         radius: float = 0.1,
-        thickness: int = 1,
+        thickness: float = 1 / 3,
         line_styles: str = "-",
         draw_front=True,
     ) -> None:
@@ -94,7 +94,10 @@ class DecodedBboxes:
             self.lidar_pointclouds[:, 0],
             self.lidar_pointclouds[:, 1],
             s=radius,
-            c="steelblue",
+            c="black",
+            marker=".",
+            linewidths=0,
+            edgecolors="none",
         )
 
         if self.lidar_bboxes is not None and len(self.lidar_bboxes) > 0:
@@ -112,7 +115,8 @@ class DecodedBboxes:
 
                 label = self.labels[index]
                 name = self.class_names[label]
-                edge_color_norms.append(np.array(OBJECT_PALETTE[name]) / 255)
+                edge_color_rgb = np.array(OBJECT_PALETTE[name], dtype=np.float32) / 255
+                edge_color_norms.append(np.concatenate([edge_color_rgb, np.array([0.5], dtype=np.float32)]))
                 if draw_front:
                     # Draw line indicating the front
                     center_bottom_forward = torch.mean(
@@ -159,7 +163,7 @@ class DecodedBboxes:
         lidar2img: npt.NDArray[np.float64],
         img_title_index: int = -1,
         alpha: float = 0.8,
-        line_widths: int = 2,
+        line_widths: float = 2 / 3,
         line_styles: str = "-",
     ) -> None:
         """
@@ -176,7 +180,7 @@ class DecodedBboxes:
         """
         # Draw the image to axis
         img = plt.imread(img_path)
-        ax.imshow(img)
+        ax.imshow(img, interpolation="nearest")
 
         # Metadata about image
         h, w, _ = img.shape
@@ -190,6 +194,7 @@ class DecodedBboxes:
 
         corners_2d = self.project_lidar_bboxex_to_img(lidar2img=lidar2img)
         edge_color_norms = []
+        face_color_norms = []
         if img_size is not None:
             # Filter out the bbox where there's no points in the images.
             # This is for the visualization of multi-view image.
@@ -204,7 +209,9 @@ class DecodedBboxes:
             corners_2d = corners_2d[valid_bbox_idx]
             for label in valid_bbox_labels:
                 name = self.class_names[label]
-                edge_color_norms.append(np.array(OBJECT_PALETTE[name]) / 255)
+                edge_color_rgb = np.array(OBJECT_PALETTE[name], dtype=np.float32) / 255
+                face_color_norms.append(edge_color_rgb)
+                edge_color_norms.append(np.concatenate([edge_color_rgb, np.array([0.5], dtype=np.float32)]))
 
         lines_verts_idx = [0, 1, 2, 3, 7, 6, 5, 4, 0, 3, 7, 4, 5, 1, 2, 6]
         lines_verts = corners_2d[:, lines_verts_idx, :]
@@ -228,7 +235,7 @@ class DecodedBboxes:
 
         # Draw a mask on the front of project bboxes
         front_polys = [front_poly for front_poly in front_polys]
-        face_colors = edge_color_norms
+        face_colors = face_color_norms
         polygon_collection = PolyCollection(
             front_polys,
             alpha=alpha,
@@ -365,7 +372,7 @@ class DecodedBboxes:
         plt.savefig(
             fname=fpath,
             format="png",
-            dpi=400,
+            dpi=1000,
             bbox_inches="tight",
         )
         plt.close()
@@ -375,7 +382,8 @@ class DecodedBboxes:
         fpath: str,
         spec_cols: int = 3,
         alpha: float = 0.8,
-        fig_size: Tuple[int, int] = (15, 10),
+        fig_size: Tuple[float, float] = (15, 10),
+        dpi: int = 400,
     ) -> None:
         """
         Visualize bboxes only on camera images.
@@ -388,7 +396,16 @@ class DecodedBboxes:
             return
 
         image_rows = ceil(len(self.img_paths) / spec_cols)
-        fig = plt.figure(figsize=fig_size)
+        first_valid_img_path = next((img_path for img_path in self.img_paths if img_path is not None), None)
+        if first_valid_img_path is not None:
+            first_img = plt.imread(first_valid_img_path)
+            img_h, img_w = first_img.shape[:2]
+            fig_size = (
+                max((img_w * spec_cols) / dpi, 1.0),
+                max((img_h * image_rows) / dpi, 1.0),
+            )
+
+        fig = plt.figure(figsize=fig_size, dpi=dpi)
         grid_spec = fig.add_gridspec(image_rows, spec_cols)
         self.visualize_bboxes_to_images(
             fig=fig,
@@ -396,11 +413,11 @@ class DecodedBboxes:
             spec_cols=spec_cols,
             alpha=alpha,
         )
-        plt.tight_layout()
+        fig.subplots_adjust(left=0.0, right=1.0, bottom=0.0, top=0.97, wspace=0.02, hspace=0.10)
         plt.savefig(
             fname=fpath,
             format="png",
-            bbox_inches="tight",
+            dpi=dpi,
         )
         plt.close()
 
@@ -422,10 +439,14 @@ class BatchDecodedBboxes:
         """ """
         scene_path = vis_dir / self.scene_name
         scene_path.mkdir(exist_ok=True, parents=True)
+        bev_scene_path = scene_path / "bev"
+        cam_scene_path = scene_path / "cam"
+        bev_scene_path.mkdir(exist_ok=True, parents=True)
+        cam_scene_path.mkdir(exist_ok=True, parents=True)
 
         lidar_stem = Path(self.lidar_filename).stem
-        lidar_fpath = scene_path / f"{lidar_stem}_bev.png"
-        camera_fpath = scene_path / f"{lidar_stem}_cam.png"
+        lidar_fpath = bev_scene_path / f"{lidar_stem}.png"
+        camera_fpath = cam_scene_path / f"{lidar_stem}.png"
 
         # Visualize bboxes only in bev
         self.decoded_bboxes.visualize_bboxes_lidar_only(

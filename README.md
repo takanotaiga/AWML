@@ -14,7 +14,7 @@ UV_CACHE_DIR=/tmp/uv_cache MMCV_WITH_OPS=1 FORCE_CUDA=1 TORCH_CUDA_ARCH_LIST=12.
 ./run_centerpoint_local_smoke.sh
 ```
 
-## 2. 可視化（先頭3フレーム）
+## 2. 可視化
 ```bash
 ./run_centerpoint_local_smoke_visualize.sh
 ```

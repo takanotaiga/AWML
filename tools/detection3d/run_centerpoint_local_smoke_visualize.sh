@@ -6,6 +6,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 cd "${REPO_ROOT}"
 
 ZERO_INTENSITY=0
+POINTCLOUD_BINS=()
 POSITIONAL_ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -13,12 +14,23 @@ while [[ $# -gt 0 ]]; do
       ZERO_INTENSITY=1
       shift
       ;;
+    --pointcloud-bin)
+      if [[ $# -lt 2 ]]; then
+        echo "--pointcloud-bin requires a file path argument." >&2
+        exit 1
+      fi
+      POINTCLOUD_BINS+=("$2")
+      shift 2
+      ;;
     -h|--help)
       cat <<'EOF'
-Usage: run_centerpoint_local_smoke_visualize.sh [--zero] [DATA_ROOT] [CHECKPOINT_PATH] [ANN_FILE_PATH]
+Usage:
+  run_centerpoint_local_smoke_visualize.sh [--zero] [DATA_ROOT] [CHECKPOINT_PATH] [ANN_FILE_PATH]
+  run_centerpoint_local_smoke_visualize.sh [--zero] --pointcloud-bin <FILE> [--pointcloud-bin <FILE> ...] [CHECKPOINT_PATH]
 
 Options:
-  --zero    Set intensity channel to zero during visualization inference.
+  --zero               Set intensity channel to zero during visualization inference.
+  --pointcloud-bin     Directly infer/visualize from .pcd.bin file(s) without info pkl preparation.
 EOF
       exit 0
       ;;
@@ -39,12 +51,30 @@ EOF
 done
 set -- "${POSITIONAL_ARGS[@]}"
 
-DATA_ROOT="${1:-/home/taiga/ml_lake/t4-dataset}"
-CHECKPOINT_PATH="${2:-${REPO_ROOT}/work_dirs/checkpoints/centerpoint_j6gen2_v2.5.1_best.pth}"
-ANN_FILE_PATH="${3:-info/local_smoke/t4dataset_local_smoke_infos_test.pkl}"
+DEFAULT_DATA_ROOT="/home/taiga/ml_lake/t4-dataset"
+DEFAULT_CHECKPOINT_PATH="${REPO_ROOT}/work_dirs/checkpoints/centerpoint_j6gen2_v2.5.1_best.pth"
+DEFAULT_ANN_FILE_PATH="info/local_smoke/t4dataset_local_smoke_infos_test.pkl"
+DIRECT_MODE=0
+DATA_ROOT="${DEFAULT_DATA_ROOT}"
+CHECKPOINT_PATH="${DEFAULT_CHECKPOINT_PATH}"
+ANN_FILE_PATH="${DEFAULT_ANN_FILE_PATH}"
+if [[ "${#POINTCLOUD_BINS[@]}" -gt 0 ]]; then
+  DIRECT_MODE=1
+  if [[ $# -gt 1 ]]; then
+    echo "In --pointcloud-bin mode, only optional [CHECKPOINT_PATH] positional argument is supported." >&2
+    exit 1
+  fi
+  CHECKPOINT_PATH="${1:-${DEFAULT_CHECKPOINT_PATH}}"
+else
+  DATA_ROOT="${1:-${DEFAULT_DATA_ROOT}}"
+  CHECKPOINT_PATH="${2:-${DEFAULT_CHECKPOINT_PATH}}"
+  ANN_FILE_PATH="${3:-${DEFAULT_ANN_FILE_PATH}}"
+fi
+
 MODEL_CFG_PATH="${MODEL_CFG_PATH:-projects/CenterPoint/configs/t4dataset/Centerpoint/second_secfpn_4xb16_121m_local_smoke_infer.py}"
 RUNTIME_MODEL_CFG_PATH="${MODEL_CFG_PATH}"
 TMP_CFG_PATH=""
+TMP_DIRECT_INFO_DIR=""
 WORK_DIR="${WORK_DIR:-work_dirs/centerpoint/local_smoke_visualize}"
 MAX_WORKERS="${MAX_WORKERS:-2}"
 CENTERPOINT_DEVICE="${CENTERPOINT_DEVICE:-gpu}"
@@ -56,6 +86,16 @@ export TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD="${TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD:-1}"
 
 mkdir -p "${UV_CACHE_DIR}"
 
+cleanup() {
+  if [[ -n "${TMP_CFG_PATH}" && -f "${TMP_CFG_PATH}" ]]; then
+    rm -f "${TMP_CFG_PATH}"
+  fi
+  if [[ -n "${TMP_DIRECT_INFO_DIR}" && -d "${TMP_DIRECT_INFO_DIR}" ]]; then
+    rm -rf "${TMP_DIRECT_INFO_DIR}"
+  fi
+}
+trap cleanup EXIT
+
 if [[ "${CENTERPOINT_DEVICE}" == "cpu" ]]; then
   # Force CPU visualization.
   export CUDA_VISIBLE_DEVICES=""
@@ -64,7 +104,7 @@ else
   export CUBLAS_WORKSPACE_CONFIG="${CUBLAS_WORKSPACE_CONFIG:-:4096:8}"
 fi
 
-if [[ ! -d "${DATA_ROOT}" ]]; then
+if [[ "${DIRECT_MODE}" == "0" && ! -d "${DATA_ROOT}" ]]; then
   echo "Data root not found: ${DATA_ROOT}" >&2
   exit 1
 fi
@@ -72,6 +112,86 @@ fi
 if [[ ! -f "${CHECKPOINT_PATH}" ]]; then
   echo "Checkpoint not found: ${CHECKPOINT_PATH}" >&2
   exit 1
+fi
+
+if [[ "${DIRECT_MODE}" == "1" ]]; then
+  mapfile -t DIRECT_MODE_INFO < <(
+    uv run --offline --no-sync python - "${RUNTIME_MODEL_CFG_PATH}" "${POINTCLOUD_BINS[@]}" <<'PY'
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+import mmengine
+import numpy as np
+from mmengine.config import Config
+
+from tools.detection3d.t4dataset_converters.update_infos_to_v2 import get_empty_standard_data_info
+
+cfg_path = sys.argv[1]
+pointcloud_paths = [Path(p).expanduser().resolve() for p in sys.argv[2:]]
+if not pointcloud_paths:
+    raise ValueError("No pointcloud files were provided.")
+
+for path in pointcloud_paths:
+    if not path.is_file():
+        raise FileNotFoundError(f"Pointcloud file not found: {path}")
+
+cfg = Config.fromfile(cfg_path)
+camera_types_cfg = cfg.get("camera_types", [])
+if isinstance(camera_types_cfg, set):
+    camera_types = sorted(camera_types_cfg)
+else:
+    camera_types = list(camera_types_cfg)
+if not camera_types:
+    camera_types = [
+        "CAM_FRONT",
+        "CAM_FRONT_RIGHT",
+        "CAM_FRONT_LEFT",
+        "CAM_BACK",
+        "CAM_BACK_RIGHT",
+        "CAM_BACK_LEFT",
+    ]
+
+class_names = list(cfg.get("class_names", []))
+if not class_names:
+    class_names = list(cfg.get("metainfo", {}).get("classes", []))
+
+common_root = Path(os.path.commonpath([str(p.parent) for p in pointcloud_paths])).resolve()
+identity = np.eye(4, dtype=np.float32).tolist()
+data_list = []
+for idx, path in enumerate(pointcloud_paths):
+    info = get_empty_standard_data_info(camera_types)
+    lidar_rel_path = os.path.relpath(path, common_root).replace(os.sep, "/")
+    info["sample_idx"] = idx
+    info["token"] = f"pointcloud_bin_{idx}"
+    info["scene_token"] = "pointcloud_bin_scene"
+    info["timestamp"] = float(idx)
+    info["ego2global"] = identity
+    info["lidar_points"] = dict(
+        num_pts_feats=5,
+        lidar_path=lidar_rel_path,
+        lidar2ego=identity,
+    )
+    info["lidar_sweeps"] = []
+    info["instances"] = []
+    data_list.append(info)
+
+tmp_dir = Path(tempfile.mkdtemp(prefix="centerpoint_local_smoke_visualize_pointcloud_bin_"))
+ann_path = tmp_dir / "t4dataset_pointcloud_bin_infos_test.pkl"
+mmengine.dump(dict(data_list=data_list, metainfo=dict(classes=class_names, version="pointcloud_bin")), ann_path)
+
+print(common_root)
+print(ann_path)
+PY
+  )
+  if [[ "${#DIRECT_MODE_INFO[@]}" -ne 2 ]]; then
+    echo "Failed to generate temporary info for --pointcloud-bin mode." >&2
+    exit 1
+  fi
+  DATA_ROOT="${DIRECT_MODE_INFO[0]}"
+  ANN_FILE_PATH="${DIRECT_MODE_INFO[1]}"
+  TMP_DIRECT_INFO_DIR="$(dirname "${ANN_FILE_PATH}")"
 fi
 
 ANN_CHECK_PATH="${ANN_FILE_PATH}"
@@ -113,7 +233,6 @@ with tempfile.NamedTemporaryFile(prefix="centerpoint_local_smoke_zero_", suffix=
 PY
 )"
   RUNTIME_MODEL_CFG_PATH="${TMP_CFG_PATH}"
-  trap 'if [[ -n "${TMP_CFG_PATH}" && -f "${TMP_CFG_PATH}" ]]; then rm -f "${TMP_CFG_PATH}"; fi' EXIT
 fi
 
 if ! uv run --offline --no-sync python - <<'PY'

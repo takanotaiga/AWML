@@ -83,6 +83,19 @@ def trigger_visualization_hook(cfg, args):
     return cfg
 
 
+def _is_dump_results_evaluator(test_evaluator_cfg) -> bool:
+    """Return True when evaluator is a dump-only metric (no dataset/checkpoint args)."""
+    if not isinstance(test_evaluator_cfg, dict):
+        return False
+
+    evaluator_type = test_evaluator_cfg.get("type", "")
+    if not isinstance(evaluator_type, str):
+        return False
+
+    evaluator_type = evaluator_type.split(".")[-1]
+    return evaluator_type in {"DumpResults", "DumpDetResults"}
+
+
 def main():
     start_time = time.time()
 
@@ -126,15 +139,19 @@ def main():
         # deterministic=True requires CuBLAS workspace configuration on CUDA.
         os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
 
-    # Update the checkpoint path in the config
-    cfg.test_evaluator.checkpoint_path = args.checkpoint
+    is_dump_results_evaluator = _is_dump_results_evaluator(cfg.get("test_evaluator", {}))
+
+    # Update the checkpoint path in the config when evaluator consumes it.
+    if not is_dump_results_evaluator:
+        cfg.test_evaluator.checkpoint_path = args.checkpoint
 
     # build the runner from config
     if "dataset_test_groups" in cfg:
         for dataset_name, dataset_file in cfg.dataset_test_groups.items():
             cfg.test_dataloader.dataset.ann_file = osp.join(cfg.info_directory_path, dataset_file)
-            cfg.test_evaluator.dataset_name = dataset_name
-            cfg.test_evaluator.ann_file = osp.join(cfg.data_root, cfg.info_directory_path, dataset_file)
+            if not is_dump_results_evaluator:
+                cfg.test_evaluator.dataset_name = dataset_name
+                cfg.test_evaluator.ann_file = osp.join(cfg.data_root, cfg.info_directory_path, dataset_file)
 
             # build the runner from config
             if "runner_type" not in cfg:

@@ -140,3 +140,50 @@ class SetInferenceIntensityZero(BaseTransform):
 
     def __repr__(self) -> str:
         return self.__class__.__name__
+
+
+@TRANSFORMS.register_module()
+class SetInferenceIntensityFromRange(BaseTransform):
+    """Replace intensity with an exponentially decayed range-based value.
+
+    The nearest point in each point cloud is scaled to ``max_intensity`` and the
+    remaining points follow ``I(d) = exp(-a * d)`` relative to that nearest
+    distance.
+
+    Args:
+        attenuation_coefficient (float): Exponential decay coefficient ``a``.
+        max_intensity (float): Maximum intensity assigned to the nearest point.
+    """
+
+    def __init__(self, attenuation_coefficient: float = 0.02, max_intensity: float = 255.0) -> None:
+        if attenuation_coefficient < 0:
+            raise ValueError(
+                f"attenuation_coefficient must be non-negative, got {attenuation_coefficient}"
+            )
+        if max_intensity <= 0:
+            raise ValueError(f"max_intensity must be positive, got {max_intensity}")
+
+        self.attenuation_coefficient = float(attenuation_coefficient)
+        self.max_intensity = float(max_intensity)
+
+    def transform(self, input_dict: dict) -> dict:
+        points = input_dict.get("points")
+        if points is None:
+            return input_dict
+
+        points_tensor = points.tensor
+        if points_tensor.size(0) == 0 or points_tensor.size(1) <= 3:
+            return input_dict
+
+        distances = points_tensor[:, :3].square().sum(dim=1).sqrt()
+        distance_from_nearest = distances - distances.min()
+        attenuated = (-self.attenuation_coefficient * distance_from_nearest).exp()
+        points_tensor[:, 3] = (attenuated * self.max_intensity).clamp_(0, self.max_intensity)
+        return input_dict
+
+    def __repr__(self) -> str:
+        return (
+            f"{self.__class__.__name__}("
+            f"attenuation_coefficient={self.attenuation_coefficient}, "
+            f"max_intensity={self.max_intensity})"
+        )

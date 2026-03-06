@@ -5,14 +5,37 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 cd "${REPO_ROOT}"
 
-ZERO_INTENSITY=0
+INTENSITY_MODE="original"
+RANGE_ATTENUATION_COEFFICIENT="${RANGE_ATTENUATION_COEFFICIENT:-0.02}"
 POINTCLOUD_BINS=()
 POSITIONAL_ARGS=()
+
+set_intensity_mode() {
+  local next_mode="$1"
+  if [[ "${INTENSITY_MODE}" != "original" ]]; then
+    echo "--zero and --range cannot be used together." >&2
+    exit 1
+  fi
+  INTENSITY_MODE="${next_mode}"
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --zero)
-      ZERO_INTENSITY=1
+      set_intensity_mode "zero"
       shift
+      ;;
+    --range)
+      set_intensity_mode "range"
+      shift
+      ;;
+    --range-attenuation)
+      if [[ $# -lt 2 ]]; then
+        echo "--range-attenuation requires a numeric argument." >&2
+        exit 1
+      fi
+      RANGE_ATTENUATION_COEFFICIENT="$2"
+      shift 2
       ;;
     --pointcloud-bin)
       if [[ $# -lt 2 ]]; then
@@ -25,11 +48,13 @@ while [[ $# -gt 0 ]]; do
     -h|--help)
       cat <<'EOF'
 Usage:
-  run_centerpoint_local_smoke_visualize.sh [--zero] [DATA_ROOT] [CHECKPOINT_PATH] [ANN_FILE_PATH]
-  run_centerpoint_local_smoke_visualize.sh [--zero] --pointcloud-bin <FILE> [--pointcloud-bin <FILE> ...] [CHECKPOINT_PATH]
+  run_centerpoint_local_smoke_visualize.sh [--zero | --range] [--range-attenuation A] [DATA_ROOT] [CHECKPOINT_PATH] [ANN_FILE_PATH]
+  run_centerpoint_local_smoke_visualize.sh [--zero | --range] [--range-attenuation A] --pointcloud-bin <FILE> [--pointcloud-bin <FILE> ...] [CHECKPOINT_PATH]
 
 Options:
   --zero               Set intensity channel to zero during visualization inference.
+  --range              Replace intensity with range-based exponential decay during visualization inference.
+  --range-attenuation  Decay coefficient a used by range mode. Default: 0.02.
   --pointcloud-bin     Directly infer/visualize from .pcd.bin file(s) without info pkl preparation.
 EOF
       exit 0
@@ -203,14 +228,20 @@ if [[ ! -f "${ANN_CHECK_PATH}" ]]; then
   exit 1
 fi
 
-if [[ "${ZERO_INTENSITY}" == "1" ]]; then
-  echo "Enabling intensity zero-fill mode (--zero)."
-  TMP_CFG_PATH="$(uv run --offline --no-sync python - "${MODEL_CFG_PATH}" <<'PY'
+if [[ "${INTENSITY_MODE}" != "original" ]]; then
+  if [[ "${INTENSITY_MODE}" == "zero" ]]; then
+    echo "Enabling intensity zero-fill mode (--zero)."
+  else
+    echo "Enabling range-based intensity mode (--range, a=${RANGE_ATTENUATION_COEFFICIENT})."
+  fi
+  TMP_CFG_PATH="$(uv run --offline --no-sync python - "${MODEL_CFG_PATH}" "${INTENSITY_MODE}" "${RANGE_ATTENUATION_COEFFICIENT}" <<'PY'
 import sys
 import tempfile
 from mmengine.config import Config
 
 src = sys.argv[1]
+mode = sys.argv[2]
+attenuation = float(sys.argv[3])
 cfg = Config.fromfile(src)
 pipeline = list(cfg.test_dataloader.dataset.pipeline)
 
@@ -223,11 +254,22 @@ for idx, step in enumerate(pipeline):
 if insert_idx is None:
     raise RuntimeError("LoadPointsFromMultiSweeps not found in test pipeline.")
 
-pipeline.insert(insert_idx, dict(type="SetInferenceIntensityZero"))
+if mode == "zero":
+    transform = dict(type="SetInferenceIntensityZero")
+elif mode == "range":
+    transform = dict(
+        type="SetInferenceIntensityFromRange",
+        attenuation_coefficient=attenuation,
+        max_intensity=255.0,
+    )
+else:
+    raise ValueError(f"Unsupported intensity mode: {mode}")
+
+pipeline.insert(insert_idx, transform)
 cfg.test_dataloader.dataset.pipeline = pipeline
 cfg.test_pipeline = pipeline
 
-with tempfile.NamedTemporaryFile(prefix="centerpoint_local_smoke_zero_", suffix=".py", delete=False) as fp:
+with tempfile.NamedTemporaryFile(prefix=f"centerpoint_local_smoke_{mode}_", suffix=".py", delete=False) as fp:
     cfg.dump(fp.name)
     print(fp.name)
 PY

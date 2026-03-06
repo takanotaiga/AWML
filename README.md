@@ -19,3 +19,6 @@ UV_CACHE_DIR=/tmp/uv_cache MMCV_WITH_OPS=1 FORCE_CUDA=1 TORCH_CUDA_ARCH_LIST=12.
 ./run_centerpoint_local_smoke_visualize.sh
 ```
 
+./run_centerpoint_local_smoke.sh --pointcloud-bin gt.pcd.bin --range --range-attenuation 0.004
+
+./run_centerpoint_local_smoke_visualize.sh --pointcloud-bin gt.pcd.bin --range

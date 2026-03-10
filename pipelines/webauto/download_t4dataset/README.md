@@ -31,6 +31,14 @@ python pipelines/webauto/download_t4dataset/download_t4dataset.py autoware_ml/co
 python pipelines/webauto/download_t4dataset/download_t4dataset.py autoware_ml/configs/t4dataset/db_tlr_v1.yaml --output ./data/t4dataset/ --project-id prd_jt --delete-rosbag
 ```
 
+- Download datasets in a single YAML in parallel
+
+```sh
+python pipelines/webauto/download_t4dataset/download_t4dataset.py autoware_ml/configs/t4dataset/db_j6_v1.yaml --output ./data/t4dataset/ --project-id x2_dev --delete-rosbag --num-workers 4
+```
+
+- `--num-workers` default is `1` (sequential).
+
 - After download as above command, the directory architecture consists as below.
 
 ```

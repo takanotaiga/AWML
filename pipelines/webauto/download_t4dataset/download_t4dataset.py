@@ -4,6 +4,7 @@ Setup a tool and configuration following <https://github.com/tier4/WebAutoCLI>.
 """
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import os
 import re
@@ -318,8 +319,38 @@ def parse_args():
         action="store_true",
         help="Download the latest version of T4dataset",
     )
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=1,
+        help="Number of datasets to download in parallel. Set 1 for sequential download.",
+    )
     args = parser.parse_args()
     return args
+
+
+def download_t4dataset_with_temporary_dir(
+    config_path: Path,
+    webauto_path: str,
+    project_id: str,
+    t4dataset_id: str,
+    t4dataset_version_id: int,
+    output_dir: str,
+    delete_rosbag: bool,
+    download_latest: bool,
+) -> None:
+    with TemporaryDirectory() as temp_dir:
+        download_t4dataset(
+            config_path,
+            webauto_path,
+            project_id,
+            t4dataset_id,
+            t4dataset_version_id,
+            output_dir,
+            temp_dir,
+            delete_rosbag,
+            download_latest,
+        )
 
 
 def main():
@@ -332,22 +363,49 @@ def main():
     assert config_path.exists() and config_path.is_file()
     output_dir = Path(args.output)
     assert output_dir.exists() and output_dir.is_dir()
+    if args.num_workers < 1:
+        raise ValueError("--num-workers must be >= 1")
 
     t4dataset_ids = get_t4dataset_ids(config_path)
 
-    for t4dataset_id, t4dataset_version_id in t4dataset_ids:
-        with TemporaryDirectory() as temp_dir:
-            download_t4dataset(
+    if args.num_workers == 1:
+        for t4dataset_id, t4dataset_version_id in t4dataset_ids:
+            download_t4dataset_with_temporary_dir(
                 config_path,
                 args.webauto_path,
                 args.project_id,
                 t4dataset_id,
                 t4dataset_version_id,
                 output_dir,
-                temp_dir,
                 args.delete_rosbag,
                 args.download_latest,
             )
+        return
+
+    print(f"Parallel download enabled: {args.num_workers} workers")
+    with ThreadPoolExecutor(max_workers=args.num_workers) as executor:
+        future_to_dataset = {
+            executor.submit(
+                download_t4dataset_with_temporary_dir,
+                config_path,
+                args.webauto_path,
+                args.project_id,
+                t4dataset_id,
+                t4dataset_version_id,
+                output_dir,
+                args.delete_rosbag,
+                args.download_latest,
+            ): (t4dataset_id, t4dataset_version_id)
+            for t4dataset_id, t4dataset_version_id in t4dataset_ids
+        }
+        for future in as_completed(future_to_dataset):
+            t4dataset_id, t4dataset_version_id = future_to_dataset[future]
+            try:
+                future.result()
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Failed to download T4Dataset ID:{t4dataset_id} with version:{t4dataset_version_id}"
+                ) from exc
 
 
 if __name__ == "__main__":

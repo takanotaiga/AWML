@@ -1,3 +1,5 @@
+from typing import Dict
+
 from mmcv.transforms import BaseTransform
 from mmdet3d.structures.ops import box_np_ops
 from mmengine.registry import TRANSFORMS
@@ -187,3 +189,47 @@ class SetInferenceIntensityFromRange(BaseTransform):
             f"attenuation_coefficient={self.attenuation_coefficient}, "
             f"max_intensity={self.max_intensity})"
         )
+
+
+@TRANSFORMS.register_module()
+class OverrideLidarPathByMapping(BaseTransform):
+    """Override only the point-loading lidar path by a precomputed mapping.
+
+    This transform updates ``input_dict['lidar_points']['lidar_path']`` while
+    keeping ``input_dict['lidar_path']`` untouched so evaluation can still use
+    the original source-scene metadata.
+
+    Args:
+        path_mapping (dict): Mapping from original lidar path to replacement
+            pointcloud path.
+        strict (bool): Raise an error when a lidar path is not found in
+            ``path_mapping``. Defaults to True.
+    """
+
+    def __init__(self, path_mapping: Dict[str, str], strict: bool = True) -> None:
+        if not isinstance(path_mapping, dict):
+            raise TypeError(f"path_mapping must be dict, got {type(path_mapping)}")
+
+        self.path_mapping = {str(src): str(dst) for src, dst in path_mapping.items()}
+        self.strict = bool(strict)
+
+    def transform(self, input_dict: dict) -> dict:
+        lidar_points = input_dict.get("lidar_points")
+        if not isinstance(lidar_points, dict):
+            return input_dict
+
+        src_path = lidar_points.get("lidar_path")
+        if src_path is None:
+            return input_dict
+
+        dst_path = self.path_mapping.get(src_path)
+        if dst_path is None:
+            if self.strict:
+                raise KeyError(f"Missing replacement lidar path for: {src_path}")
+            return input_dict
+
+        lidar_points["lidar_path"] = dst_path
+        return input_dict
+
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}(mapping_size={len(self.path_mapping)}, strict={self.strict})"

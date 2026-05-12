@@ -360,9 +360,12 @@ def main():
     check_webauto_version(args.webauto_path)
 
     config_path = Path(args.config)
-    assert config_path.exists() and config_path.is_file()
+    if not (config_path.exists() and config_path.is_file()):
+        raise FileNotFoundError(f"Config file not found: {config_path}")
     output_dir = Path(args.output)
-    assert output_dir.exists() and output_dir.is_dir()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    if not output_dir.is_dir():
+        raise NotADirectoryError(f"Output path is not a directory: {output_dir}")
     if args.num_workers < 1:
         raise ValueError("--num-workers must be >= 1")
 

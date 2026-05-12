@@ -1,6 +1,7 @@
 from .object_min_points_filter import (
     ObjectMinPointsFilter,
     ObjectRangeMinPointsFilter,
+    OverrideLidarPathByMapping,
     SetInferenceIntensityFromRange,
     SetInferenceIntensityZero,
 )
@@ -8,6 +9,7 @@ from .object_min_points_filter import (
 __all__ = [
     "ObjectMinPointsFilter",
     "ObjectRangeMinPointsFilter",
+    "OverrideLidarPathByMapping",
     "SetInferenceIntensityFromRange",
     "SetInferenceIntensityZero",
 ]
